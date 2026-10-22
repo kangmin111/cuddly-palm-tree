@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>부캉이 런 - 북항 탈출기</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; background-color: #5cb8ff; touch-action: none; }
+        #game-canvas { display: block; width: 100vw; height: 100vh; }
+        
+        /* UI 폰트 및 애니메이션 */
+        @import url('https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Noto+Sans+KR:wght@700&display=swap');
+        .font-title { font-family: 'Black Han Sans', sans-serif; }
+        .font-ui { font-family: 'Noto Sans KR', sans-serif; }
+        
+        .coin-animation {
+            animation: bounce 1s infinite alternate;
+        }
+        @keyframes bounce {
+            from { transform: translateY(0px); }
+            to { transform: translateY(-10px); }
+        }
+        
+        /* 상단 그라데이션 오버레이 (스코어 가독성) */
+        .top-gradient {
+            background: linear-gradient(to bottom, rgba(0,0,0,0.5) 0%, rgba(0,0,0,0) 100%);
+        }
+    </style>
+</head>
+<body class="select-none">
+
+    <!-- Game Canvas -->
+    <canvas id="game-canvas"></canvas>
+
+    <!-- In-Game UI -->
+    <div id="ui-layer" class="absolute top-0 left-0 w-full h-full pointer-events-none flex flex-col justify-between">
+        <!-- 상단 스코어 -->
+        <div class="top-gradient w-full p-6 pt-12 flex justify-between items-start">
+            <div class="flex flex-col drop-shadow-md">
+                <span class="text-white text-lg font-ui font-bold">SCORE</span>
+                <span id="score-text" class="text-yellow-400 text-4xl font-title tracking-wider">0</span>
+            </div>
+            <div class="text-white/80 text-sm text-right font-ui">
+                <p>좌/우 스와이프: 이동</p>
+                <p>위 스와이프: 점프</p>
+                <p>아래 스와이프: 잠수</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Start Screen -->
+    <div id="start-screen" class="absolute inset-0 bg-blue-900/80 backdrop-blur-sm flex flex-col items-center justify-center z-50 transition-opacity duration-300">
+        <h1 class="text-6xl text-white font-title mb-2 text-center drop-shadow-[0_4px_4px_rgba(0,0,0,0.5)]">
+            상어<span class="text-blue-300">부캉이</span>
+        </h1>
+        <p class="text-yellow-400 font-ui font-bold text-xl mb-8">북항 수로 버티기 작전</p>
+        
+        <button id="start-btn" class="pointer-events-auto bg-gradient-to-b from-blue-400 to-blue-600 hover:from-blue-300 hover:to-blue-500 text-white font-title text-2xl py-4 px-12 rounded-full shadow-[0_6px_0_#1e3a8a] active:shadow-[0_0px_0_#1e3a8a] active:translate-y-[6px] transition-all">
+            게임 시작
+        </button>
+        <p class="text-white/70 font-ui mt-6 text-sm">터치(스와이프) 또는 키보드 방향키 조작</p>
+    </div>
+
+    <!-- Game Over Screen -->
+    <div id="game-over-screen" class="absolute inset-0 bg-red-900/80 backdrop-blur-sm flex flex-col items-center justify-center z-50 hidden opacity-0 transition-opacity duration-300">
+        <h2 class="text-6xl text-white font-title mb-4 text-center drop-shadow-lg text-red-300">
+            작전 실패!
+        </h2>
+        <div class="bg-black/40 p-6 rounded-2xl mb-8 text-center min-w-[250px]">
+            <p class="text-white font-ui text-lg mb-1">최종 버틴 점수</p>
+            <p id="final-score" class="text-yellow-400 font-title text-5xl">0</p>
+        </div>
+        
+        <button id="restart-btn" class="pointer-events-auto bg-gradient-to-b from-yellow-400 to-yellow-600 hover:from-yellow-300 hover:to-yellow-500 text-blue-900 font-title text-2xl py-4 px-12 rounded-full shadow-[0_6px_0_#b45309] active:shadow-[0_0px_0_#b45309] active:translate-y-[6px] transition-all">
+            다시 버티기
+        </button>
+    </div>
+
+    <script>
+        // --- Game Core Variables ---
+        let scene, camera, renderer;
+        let shark, sharkBodyGroup;
+        let environmentGroup;
+        
+        // Game State
+        let isPlaying = false;
+        let score = 0;
+        let gameSpeed = 30; // units per second
+        let distanceTraveled = 0;
+        
+        // Lane Mechanics (Left: -3, Center: 0, Right: 3)
+        const LANE_WIDTH = 3.5;
+        let currentLane = 0; 
+        let targetX = 0;
+        
+        // Action Mechanics
+        let isJumping = false;
+        let isDiving = false;
+        let velocityY = 0;
+        const GRAVITY = -60;
+        const JUMP_FORCE = 20;
+        const DIVE_DEPTH = -1.5;
+        const BASE_Y = 0.5; // Surface level for shark
+        
+        // Object Pooling & Management
+        let obstacles = [];
+        let coins = [];
+        let roadLines = [];
+        
+        let lastTime = 0;
+        let spawnTimer = 0;
+        let spawnInterval = 1.0; // Seconds between spawns
+
+        // DOM Elements
+        const scoreText = document.getElementById('score-text');
+        const startScreen = document.getElementById('start-screen');
+        const gameOverScreen = document.getElementById('game-over-screen');
+        const finalScoreText = document.getElementById('final-score');
+        const startBtn = document.getElementById('start-btn');
+        const restartBtn = document.getElementById('restart-btn');
+
+        // --- Initialization ---
+        function init() {
+            // 1. Scene Setup
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x60c0ff); // Sky blue
+            scene.fog = new THREE.Fog(0x60c0ff, 30, 100);
+
+            // 2. Camera Setup (Portrait optimized)
+            const aspect = window.innerWidth / window.innerHeight;
+            camera = new THREE.PerspectiveCamera(65, aspect, 0.1, 200);
+            camera.position.set(0, 7, 12);
+            camera.lookAt(0, 1, -10);
+
+            // 3. Renderer Setup
+            const canvas = document.getElementById('game-canvas');
+            renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+            // 4. Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(20, 40, 20);
+            dirLight.castShadow = true;
+            dirLight.shadow.camera.left = -15;
+            dirLight.shadow.camera.right = 15;
+            dirLight.shadow.camera.top = 20;
+            dirLight.shadow.camera.bottom = -20;
+            dirLight.shadow.camera.far = 100;
+            scene.add(dirLight);
+
+            // 5. Build World & Character
+            createEnvironment();
+            createShark();
+
+            // 6. Event Listeners
+            window.addEventListener('resize', onWindowResize);
+            setupInputHandlers();
+
+            startBtn.addEventListener('click', startGame);
+            restartBtn.addEventListener('click', resetGame);
+
+            // Start Animation Loop (rendering background even if not playing)
+            requestAnimationFrame(animate);
+        }
+
+        // --- Environment Creation (Water & Roads) ---
+        function createEnvironment() {
+            environmentGroup = new THREE.Group();
+            
+            // Water Channel
+            const waterGeo = new THREE.PlaneGeometry(LANE_WIDTH * 3, 200);
+            const waterMat = new THREE.MeshPhongMaterial({ 
+                color: 0x00aaff, 
+                shininess: 100,
+                transparent: true,
+                opacity: 0.9
+            });
+            const water = new THREE.Mesh(waterGeo, waterMat);
+            water.rotation.x = -Math.PI / 2;
+            water.receiveShadow = true;
+            environmentGroup.add(water);
+
+            // Side Roads (Asphalt)
+            const roadGeo = new THREE.PlaneGeometry(10, 200);
+            const roadMat = new THREE.MeshPhongMaterial({ color: 0x333333 });
+            
+            const leftRoad = new THREE.Mesh(roadGeo, roadMat);
+            leftRoad.rotation.x = -Math.PI / 2;
+            leftRoad.position.set(-LANE_WIDTH * 1.5 - 5, 0.1, 0);
+            leftRoad.receiveShadow = true;
+            environmentGroup.add(leftRoad);
+
+            const rightRoad = new THREE.Mesh(roadGeo, roadMat);
+            rightRoad.rotation.x = -Math.PI / 2;
+            rightRoad.position.set(LANE_WIDTH * 1.5 + 5, 0.1, 0);
+            rightRoad.receiveShadow = true;
+            environmentGroup.add(rightRoad);
+
+            // Yellow Borders
+            const borderGeo = new THREE.BoxGeometry(0.5, 0.3, 200);
+            const borderMat = new THREE.MeshPhongMaterial({ color: 0xffcc00 });
+            
+            const leftBorder = new THREE.Mesh(borderGeo, borderMat);
+            leftBorder.position.set(-LANE_WIDTH * 1.5 - 0.25, 0.15, 0);
+            environmentGroup.add(leftBorder);
+
+            const rightBorder = new THREE.Mesh(borderGeo, borderMat);
+            rightBorder.position.set(LANE_WIDTH * 1.5 + 0.25, 0.15, 0);
+            environmentGroup.add(rightBorder);
+
+            // Moving Road Lines for speed illusion
+            const lineGeo = new THREE.PlaneGeometry(0.2, 3);
+            const lineMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+            
+            for (let i = 0; i < 20; i++) {
+                const zPos = -100 + (i * 10);
+                
+                // Left road lines
+                const lLine = new THREE.Mesh(lineGeo, lineMat);
+                lLine.rotation.x = -Math.PI / 2;
+                lLine.position.set(-LANE_WIDTH * 1.5 - 2, 0.15, zPos);
+                environmentGroup.add(lLine);
+                roadLines.push(lLine);
+
+                // Right road lines
+                const rLine = new THREE.Mesh(lineGeo, lineMat);
+                rLine.rotation.x = -Math.PI / 2;
+                rLine.position.set(LANE_WIDTH * 1.5 + 2, 0.15, zPos);
+                environmentGroup.add(rLine);
+                roadLines.push(rLine);
+            }
+
+            scene.add(environmentGroup);
+        }
+
+        // --- Character Creation (Shark) ---
+        function createShark() {
+            shark = new THREE.Group();
+            sharkBodyGroup = new THREE.Group(); // Inner group for animations (wobble)
+
+            // Materials
+            const blueMat = new THREE.MeshPhongMaterial({ color: 0x2b5c8f, flatShading: true });
+            const whiteMat = new THREE.MeshPhongMaterial({ color: 0xffffff, flatShading: true });
+            const darkMat = new THREE.MeshPhongMaterial({ color: 0x111111 });
+
+            // 1. Body (Stretched Spheres)
+            const topBodyGeo = new THREE.SphereGeometry(1, 12, 12, 0, Math.PI * 2, 0, Math.PI / 2);
+            const topBody = new THREE.Mesh(topBodyGeo, blueMat);
+            topBody.scale.set(1, 1.2, 3);
+            
+            const bottomBodyGeo = new THREE.SphereGeometry(1, 12, 12, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2);
+            const bottomBody = new THREE.Mesh(bottomBodyGeo, whiteMat);
+            bottomBody.scale.set(1, 1.2, 3);
+
+            // 2. Dorsal Fin (Top)
+            const dorsalGeo = new THREE.ConeGeometry(0.5, 1.5, 4);
+            const dorsal = new THREE.Mesh(dorsalGeo, blueMat);
+            dorsal.position.set(0, 1.2, -0.5);
+            dorsal.rotation.x = -Math.PI / 8;
+
+            // 3. Pectoral Fins (Sides)
+            const pecGeo = new THREE.ConeGeometry(0.4, 1.5, 4);
+            
+            const leftPec = new THREE.Mesh(pecGeo, blueMat);
+            leftPec.position.set(-1, 0, 0.5);
+            leftPec.rotation.z = Math.PI / 3;
+            leftPec.rotation.x = -Math.PI / 4;
+
+            const rightPec = new THREE.Mesh(pecGeo, blueMat);
+            rightPec.position.set(1, 0, 0.5);
+            rightPec.rotation.z = -Math.PI / 3;
+            rightPec.rotation.x = -Math.PI / 4;
+
+            // 4. Tail (Back)
+            const tailGeo = new THREE.ConeGeometry(0.6, 2, 4);
+            const tail = new THREE.Mesh(tailGeo, blueMat);
+            tail.position.set(0, 0, 3.5);
+            tail.rotation.x = Math.PI / 2;
+            tail.scale.set(0.3, 1, 1);
+
+            // 5. Eyes
+            const eyeGeo = new THREE.SphereGeometry(0.15, 8, 8);
+            const leftEye = new THREE.Mesh(eyeGeo, darkMat);
+            leftEye.position.set(-0.6, 0.5, -2);
+            const rightEye = new THREE.Mesh(eyeGeo, darkMat);
+            rightEye.position.set(0.6, 0.5, -2);
+
+            // Assemble
+            sharkBodyGroup.add(topBody);
+            sharkBodyGroup.add(bottomBody);
+            sharkBodyGroup.add(dorsal);
+            sharkBodyGroup.add(leftPec);
+            sharkBodyGroup.add(rightPec);
+            sharkBodyGroup.add(tail);
+            sharkBodyGroup.add(leftEye);
+            sharkBodyGroup.add(rightEye);
+
+            // Enable shadows
+            sharkBodyGroup.traverse(child => {
+                if(child.isMesh) {
+                    child.castShadow = true;
+                    child.receiveShadow = true;
+                }
+            });
+
+            shark.add(sharkBodyGroup);
+            shark.position.set(0, BASE_Y, 0);
+            scene.add(shark);
+        }
+
+        // --- Spawning Logic ---
+        function spawnObject() {
+            // Randomly choose lane (-1, 0, 1)
+            const lane = Math.floor(Math.random() * 3) - 1;
+            const xPos = lane * LANE_WIDTH;
+            const zPos = -80; // Spawn far ahead
+
+            // Decide what to spawn (70% coin, 30% obstacle)
+            if (Math.random() > 0.3) {
+                spawnCoin(xPos, zPos);
+            } else {
+                spawnObstacle(xPos, zPos);
+            }
+
+            // Sometimes spawn a secondary obstacle to make it harder
+            if (Math.random() > 0.6) {
+                let secondLane = Math.floor(Math.random() * 3) - 1;
+                if (secondLane !== lane) {
+                    spawnObstacle(secondLane * LANE_WIDTH, zPos);
+                }
+            }
+        }
+
+        function spawnCoin(x, z) {
+            const geo = new THREE.CylinderGeometry(0.8, 0.8, 0.2, 16);
+            const mat = new THREE.MeshPhongMaterial({ color: 0xffd700, shininess: 100 });
+            const coin = new THREE.Mesh(geo, mat);
+            
+            coin.position.set(x, 1.5, z);
+            coin.rotation.x = Math.PI / 2;
+            coin.castShadow = true;
+            
+            // Collision radius
+            coin.userData = { radius: 1.0, active: true }; 
+            
+            scene.add(coin);
+            coins.push(coin);
+        }
+
+        function spawnObstacle(x, z) {
+            // Create a red "Net/Boat" block
+            const type = Math.floor(Math.random() * 3); // 0: Normal, 1: High (Duck), 2: Low (Jump)
+            let geo, mat, yPos;
+            
+            mat = new THREE.MeshPhongMaterial({ color: 0xe63946 }); // Reddish
+
+            if (type === 0) {
+                // Normal block (Must change lane)
+                geo = new THREE.BoxGeometry(2.5, 2.5, 2);
+                yPos = 1.25;
+                mat.color.setHex(0xe63946); // Red
+            } else if (type === 1) {
+                // High block (Must Dive)
+                geo = new THREE.BoxGeometry(3, 1.5, 2);
+                yPos = 2.5;
+                mat.color.setHex(0x457b9d); // Blueish steel
+            } else {
+                // Low block (Must Jump)
+                geo = new THREE.BoxGeometry(3, 1.5, 2);
+                yPos = 0.75;
+                mat.color.setHex(0xf4a261); // Orange/Wood
+            }
+
+            const obstacle = new THREE.Mesh(geo, mat);
+            obstacle.position.set(x, yPos, z);
+            obstacle.castShadow = true;
+            obstacle.receiveShadow = true;
+            
+            // Bounding box for collision
+            obstacle.userData = { 
+                box: new THREE.Box3().setFromObject(obstacle),
+                type: type,
+                active: true
+            };
+            
+            scene.add(obstacle);
+            obstacles.push(obstacle);
+        }
+
+        // --- Input Handling ---
+        let touchStartX = 0;
+        let touchStartY = 0;
+
+        function setupInputHandlers() {
+            // Keyboard
+            window.addEventListener('keydown', (e) => {
+                if (!isPlaying) return;
+                switch(e.key) {
+                    case 'ArrowLeft':  moveLane(-1); break;
+                    case 'ArrowRight': moveLane(1); break;
+                    case 'ArrowUp':    jump(); break;
+                    case 'ArrowDown':  dive(); break;
+                }
+            });
+
+            // Touch (Mobile)
+            const canvas = document.getElementById('game-canvas');
+            canvas.addEventListener('touchstart', (e) => {
+                touchStartX = e.changedTouches[0].screenX;
+                touchStartY = e.changedTouches[0].screenY;
+            }, { passive: false });
+
+            canvas.addEventListener('touchend', (e) => {
+                if (!isPlaying) return;
+                const touchEndX = e.changedTouches[0].screenX;
+                const touchEndY = e.changedTouches[0].screenY;
+                
+                handleSwipe(touchStartX, touchStartY, touchEndX, touchEndY);
+            }, { passive: false });
+        }
+
+        function handleSwipe(startX, startY, endX, endY) {
+            const dx = endX - startX;
+            const dy = endY - startY;
+            const absDx = Math.abs(dx);
+            const absDy = Math.abs(dy);
+
+            if (Math.max(absDx, absDy) > 30) { // Minimum swipe distance
+                if (absDx > absDy) {
+                    // Horizontal Swipe
+                    if (dx > 0) moveLane(1);
+                    else moveLane(-1);
+                } else {
+                    // Vertical Swipe
+                    if (dy < 0) jump(); // Swipe Up -> Jump
+                    else dive();        // Swipe Down -> Dive
+                }
+            }
+        }
+
+        // --- Actions ---
+        function moveLane(direction) {
+            currentLane += direction;
+            // Clamp lane to -1, 0, 1
+            currentLane = Math.max(-1, Math.min(1, currentLane));
+            targetX = currentLane * LANE_WIDTH;
+            
+            // Visual tilt when changing lanes
+            sharkBodyGroup.rotation.z = -direction * 0.5;
+        }
+
+        function jump() {
+            if (!isJumping && !isDiving) {
+                isJumping = true;
+                velocityY = JUMP_FORCE;
+            }
+        }
+
+        function dive() {
+            if (!isJumping && !isDiving) {
+                isDiving = true;
+                // Animate to dive depth
+                shark.position.y = DIVE_DEPTH;
+                sharkBodyGroup.rotation.x = Math.PI / 6; // Tilt down
+                
+                // Return to surface after short time
+                setTimeout(() => {
+                    shark.position.y = BASE_Y;
+                    sharkBodyGroup.rotation.x = 0;
+                    isDiving = false;
+                }, 800);
+            }
+        }
+
+        // --- Game Flow ---
+        function startGame() {
+            startScreen.classList.add('opacity-0');
+            setTimeout(() => {
+                startScreen.classList.add('hidden');
+                isPlaying = true;
+                lastTime = performance.now();
+                requestAnimationFrame(gameLoop);
+            }, 300);
+        }
+
+        function resetGame() {
+            // Clear entities
+            obstacles.forEach(obs => scene.remove(obs));
+            coins.forEach(coin => scene.remove(coin));
+            obstacles = [];
+            coins = [];
+
+            // Reset variables
+            score = 0;
+            scoreText.innerText = '0';
+            gameSpeed = 30;
+            currentLane = 0;
+            targetX = 0;
+            shark.position.set(0, BASE_Y, 0);
+            sharkBodyGroup.rotation.set(0,0,0);
+            isJumping = false;
+            isDiving = false;
+            velocityY = 0;
+
+            // UI
+            gameOverScreen.classList.add('opacity-0');
+            setTimeout(() => {
+                gameOverScreen.classList.add('hidden');
+                isPlaying = true;
+                lastTime = performance.now();
+                requestAnimationFrame(gameLoop);
+            }, 300);
+        }
+
+        function gameOver() {
+            isPlaying = false;
+            finalScoreText.innerText = score;
+            gameOverScreen.classList.remove('hidden');
+            // Small delay to allow display block to apply before opacity transition
+            setTimeout(() => {
+                gameOverScreen.classList.remove('opacity-0');
+            }, 10);
+            
+            // Shake effect on game over
+            camera.position.x += (Math.random() - 0.5) * 2;
+            camera.position.y += (Math.random() - 0.5) * 2;
+            setTimeout(() => { camera.position.set(0, 7, 12); }, 100);
+        }
+
+        // --- Main Game Loop ---
+        function gameLoop(time) {
+            if (!isPlaying) return;
+
+            const dt = (time - lastTime) / 1000;
+            lastTime = time;
+
+            updatePhysics(dt);
+            updateEntities(dt);
+            checkCollisions();
+            updateEnvironment(dt);
+
+            // Increase difficulty over time
+            gameSpeed += dt * 0.2; 
+            spawnInterval = Math.max(0.4, 1.5 - (gameSpeed - 30) * 0.02);
+
+            renderer.render(scene, camera);
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Idle animation for main menu
+        function animate(time) {
+            if (!isPlaying) {
+                // Bobbing effect
+                if(shark) {
+                    shark.position.y = BASE_Y + Math.sin(time * 0.002) * 0.2;
+                    sharkBodyGroup.rotation.y = Math.sin(time * 0.001) * 0.1;
+                }
+                // Move environment slowly
+                updateEnvironment(0.016); // Approx 60fps delta
+                renderer.render(scene, camera);
+            }
+            if(!isPlaying) requestAnimationFrame(animate);
+        }
+
+        function updatePhysics(dt) {
+            // Horizontal Movement (Lerp)
+            shark.position.x += (targetX - shark.position.x) * 10 * dt;
+            
+            // Recover tilt from moving lanes
+            if (sharkBodyGroup.rotation.z !== 0) {
+                sharkBodyGroup.rotation.z += (0 - sharkBodyGroup.rotation.z) * 5 * dt;
+            }
+
+            // Swimming animation (Tail wagging)
+            if (sharkBodyGroup.children.length > 5) { // Ensure tail exists
+                const tail = sharkBodyGroup.children[5];
+                tail.rotation.z = Math.sin(performance.now() * 0.01) * 0.3;
+            }
+
+            // Jump Physics
+            if (isJumping) {
+                velocityY += GRAVITY * dt;
+                shark.position.y += velocityY * dt;
+
+                // Tilt nose up/down based on velocity
+                sharkBodyGroup.rotation.x = -velocityY * 0.02;
+
+                // Landed
+                if (shark.position.y <= BASE_Y) {
+                    shark.position.y = BASE_Y;
+                    isJumping = false;
+                    velocityY = 0;
+                    sharkBodyGroup.rotation.x = 0;
+                }
+            }
+        }
+
+        function updateEntities(dt) {
+            const moveDist = gameSpeed * dt;
+            distanceTraveled += moveDist;
+
+            // Spawner
+            spawnTimer += dt;
+            if (spawnTimer >= spawnInterval) {
+                spawnObject();
+                spawnTimer = 0;
+            }
+
+            // Move & Cleanup Obstacles
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                const obs = obstacles[i];
+                obs.position.z += moveDist;
+                
+                // Update Bounding Box
+                obs.userData.box.setFromObject(obs);
+
+                // Remove if behind camera
+                if (obs.position.z > 20) {
+                    scene.remove(obs);
+                    obstacles.splice(i, 1);
+                }
+            }
+
+            // Move, Rotate & Cleanup Coins
+            for (let i = coins.length - 1; i >= 0; i--) {
+                const coin = coins[i];
+                coin.position.z += moveDist;
+                coin.rotation.z += 5 * dt; // Spin
+
+                if (coin.position.z > 20) {
+                    scene.remove(coin);
+                    coins.splice(i, 1);
+                }
+            }
+        }
+
+        function updateEnvironment(dt) {
+            const moveDist = (isPlaying ? gameSpeed : 10) * dt;
+
+            // Loop road lines to simulate speed
+            roadLines.forEach(line => {
+                line.position.z += moveDist;
+                if (line.position.z > 20) {
+                    line.position.z -= 200;
+                }
+            });
+        }
+
+        function checkCollisions() {
+            // Simplified Shark Bounding Box (AABB) based on current position
+            // Make it slightly smaller than visual size for forgiving gameplay
+            const sharkBox = new THREE.Box3();
+            sharkBox.setFromCenterAndSize(
+                new THREE.Vector3(shark.position.x, shark.position.y + 0.5, shark.position.z - 1),
+                new THREE.Vector3(1.5, 1.5, 4)
+            );
+
+            // Check Obstacles (Game Over)
+            for (let i = 0; i < obstacles.length; i++) {
+                const obs = obstacles[i];
+                if (!obs.userData.active) continue;
+
+                if (sharkBox.intersectsBox(obs.userData.box)) {
+                    obs.userData.active = false; // Prevent multiple triggers
+                    gameOver();
+                    return;
+                }
+            }
+
+            // Check Coins (Score)
+            const sharkCenter = new THREE.Vector3(shark.position.x, shark.position.y + 0.5, shark.position.z - 1);
+            for (let i = coins.length - 1; i >= 0; i--) {
+                const coin = coins[i];
+                if (!coin.userData.active) continue;
+
+                const distance = sharkCenter.distanceTo(coin.position);
+                if (distance < 2.5) { // Collection radius
+                    // Collect
+                    coin.userData.active = false;
+                    scene.remove(coin);
+                    coins.splice(i, 1);
+                    
+                    // Add Score
+                    score += 10;
+                    scoreText.innerText = score;
+                    
+                    // UI Animation trigger
+                    scoreText.classList.remove('coin-animation');
+                    void scoreText.offsetWidth; // trigger reflow
+                    scoreText.classList.add('coin-animation');
+                }
+            }
+        }
+
+        // Handle Window Resize
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // Run
+        window.onload = init;
+
+    </script>
+</body>
+</html>
+```eof
+
+### 구현 포인트 요약
+1. **Three.js 기하학 도형 활용**: 상어(부캉이) 모델은 외부 에셋(obj, gltf)을 로드하지 않고 `SphereGeometry`, `ConeGeometry` 등 3D 기본 도형들을 계층적(`Group`)으로 조합하여 푸른 등과 하얀 배, 지느러미를 입체적으로 구현했습니다.
+2. **속도감 있는 배경**: 중앙의 반투명한 푸른 물과 양옆의 아스팔트 도로를 구축하고, 도로의 흰색 차선들이 쉴 새 없이 다가오게 애니메이션 처리하여 무한 질주(Endless Runner)의 속도감을 부여했습니다.
+3. **직관적인 모바일 조작**:
+   - `touchstart`와 `touchend`의 좌표를 계산하여 상하좌우 스와이프(Swipe)를 정밀하게 판별합니다.
+   - 좌/우 스와이프 시 부드럽게 레인(Lane)을 이동하며, 이동 시 몸체가 자연스럽게 기울어집니다.
+   - 위로 스와이프하면 점프(Jump)하며 중력 물리 연산이 적용됩니다.
+   - 아래로 스와이프하면 일정 시간 잠수(Dive)하여 높은 장애물을 회피합니다. (PC에서는 방향키로 동일하게 작동합니다.)
+4. **장애물 및 코인 스폰 시스템**: 난이도에 따라 빨간색 장애물(그물/보트 형태)과 회전하는 노란색 동전이 무작위 레인에서 생성되며, 게임이 진행될수록 점점 속도가 빨라집니다.
+
+우측 화면의 **'Preview'** 버튼을 누르시면 시원하게 물살을 가르는 부캉이의 탈출기를 직접 플레이해보실 수 있습니다!
